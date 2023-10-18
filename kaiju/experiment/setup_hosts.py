@@ -23,26 +23,29 @@ THRIFT_PORT = 8080
 KAIJU_PORT=8081
 KAIJU_HOSTS_INTERNAL=""
 KAIJU_HOSTS_EXTERNAL=""
+KAIJU_HOSTS_EXTERNAL_REPLICA=""
 netCmd = "sudo sysctl net.ipv4.tcp_syncookies=1 > /dev/null; sudo sysctl net.core.netdev_max_backlog=250000 > /dev/null; sudo ifconfig ens3 txqueuelen 10000000; sudo sysctl net.core.somaxconn=100000 > /dev/null ; sudo sysctl net.core.netdev_max_backlog=10000000 > /dev/null; sudo sysctl net.ipv4.tcp_max_syn_backlog=1000000 > /dev/null; sudo sysctl -w net.ipv4.ip_local_port_range='1024 64000' > /dev/null; sudo sysctl -w net.ipv4.tcp_fin_timeout=2 > /dev/null; "
 
 username = "ubuntu"
 
-file_name = "/home/ubuntu/hosts/all-hosts.txt"
+file_name_clients = "/home/ubuntu/hosts/all-clients.txt"
+file_name_servers = "/home/ubuntu/hosts/all-servers.txt"
 
 # Read the contents of the file and store the nodes in a list
-with open(file_name, "r") as f:
+with open(file_name_clients, "r") as f:
     nodes = f.readlines()
+clients_list = [node.strip() for node in nodes]
+
+with open(file_name_servers, "r") as f:
+    nodes = f.readlines()
+server_list = [node.strip() for node in nodes]
 
 # Remove newline characters from the nodes
 nodes = [node.strip() for node in nodes]
 
-n_servers = len(nodes)//2
-n_clients = len(nodes)//2
-
-#list of clients and servers IP addresses
-clients_list = [nodes[i] for i in range(n_servers, n_servers + n_clients)]
-
-server_list = [nodes[i] for i in range(n_servers)]
+n_servers = len(clients_list)
+n_clients = len(server_list)
+is_replicated = False
 
 def get_zipf():
     ZIPFIAN_CONSTANT = 0
@@ -77,14 +80,19 @@ def start_servers(**kwargs):
      -outbound_internal_conn %d \
      -locktable_numlatches %d \
      -opw %d \
+     -replication %d \
      -overwrite_gc_prep_ms %d \
      -freshness_test %d \
       1>server-%d.log 2>&1 & "
     setup_hosts()
     sid = 0
     i = 0
+    replication = kwargs.get("replication",0)
+    num_s = n_servers
+    if replication == 1:
+        num_s *= 2
     for server in server_list:
-        if i == n_servers:
+        if i == num_s:
             break
         servercmd = HEADER
         for s_localid in range(0, SERVERS_PER_HOST):
@@ -105,6 +113,7 @@ def start_servers(**kwargs):
                    kwargs.get("outbound_internal_conn", 1),
                    kwargs.get("locktable_numlatches", 1024),
                    kwargs.get("opw", 0),
+                   kwargs.get("replication",0),
                    kwargs.get("overwrite_gc_prep_ms", 4000),
                    kwargs.get("freshness",0),
                    s_localid))
@@ -114,13 +123,16 @@ def start_servers(**kwargs):
         start_cmd_disown_nobg(server, servercmd)
 
 def setup_hosts():
+    num_s = n_servers
+    if is_replicated:
+        num_s *= 2
     pprint("Appending authorized key...")
-    run_cmd("all-hosts", "sudo chown ubuntu /etc/security/limits.conf; sudo chmod u+w /etc/security/limits.conf; sudo echo '* soft nofile 1000000\n* hard nofile 1000000' >> /etc/security/limits.conf; sudo chown ubuntu /etc/pam.d/common-session; sudo echo 'session required pam_limits.so' >> /etc/pam.d/common-session",n_servers+n_clients)
+    run_cmd("all-hosts", "sudo chown ubuntu /etc/security/limits.conf; sudo chmod u+w /etc/security/limits.conf; sudo echo '* soft nofile 1000000\n* hard nofile 1000000' >> /etc/security/limits.conf; sudo chown ubuntu /etc/pam.d/common-session; sudo echo 'session required pam_limits.so' >> /etc/pam.d/common-session",num_s+n_clients)
     #run_cmd("all-hosts", "cat /home/ubuntu/.ssh/kaiju_rsa.pub >> /home/ubuntu/.ssh/authorized_keys", user="ubuntu")
     pprint("Done")
 
-    run_cmd("all-hosts", " wget --output-document sigar.tar.gz 'http://downloads.sourceforge.net/project/sigar/sigar/1.6/hyperic-sigar-1.6.4.tar.gz?r=http%3A%2F%2Fsourceforge.net%2Fprojects%2Fsigar%2Ffiles%2Fsigar%2F1.6%2F&ts=1375479576&use_mirror=iweb'; tar -xvf sigar*; sudo rm /usr/local/lib/libsigar*; sudo cp ./hyperic-sigar-1.6.4/sigar-bin/lib/libsigar-amd64-linux.so /usr/local/lib/; rm -rf *sigar*",n_clients+n_servers)
-    run_cmd("all-hosts", "sudo echo 'include /usr/local/lib' >> /etc/ld.so.conf; sudo ldconfig",n_clients+n_servers)
+    run_cmd("all-hosts", " wget --output-document sigar.tar.gz 'http://downloads.sourceforge.net/project/sigar/sigar/1.6/hyperic-sigar-1.6.4.tar.gz?r=http%3A%2F%2Fsourceforge.net%2Fprojects%2Fsigar%2Ffiles%2Fsigar%2F1.6%2F&ts=1375479576&use_mirror=iweb'; tar -xvf sigar*; sudo rm /usr/local/lib/libsigar*; sudo cp ./hyperic-sigar-1.6.4/sigar-bin/lib/libsigar-amd64-linux.so /usr/local/lib/; rm -rf *sigar*",n_clients+num_s)
+    run_cmd("all-hosts", "sudo echo 'include /usr/local/lib' >> /etc/ld.so.conf; sudo ldconfig",n_clients+num_s)
 
 def fetch_logs(runid, clients, servers, **kwargs):
     def fetchYCSB(rundir, client):
@@ -168,9 +180,13 @@ def fetch_logs(runid, clients, servers, **kwargs):
     pprint("Done clients")
 
     ths = []
+    num_s = n_servers
+    if is_replicated:
+        num_s *= 2
+    
     pprint("Fetching logs from servers.")
     for i,server in enumerate(servers):
-        if i == n_servers:
+        if i == num_s:
             break
         if not bgfetch:
             t = Thread(target=fetchkaiju, args=(outroot, server, "S"))
@@ -189,12 +205,15 @@ def fetch_logs(runid, clients, servers, **kwargs):
         sleep(30)
 def run_cmd_in_kaiju(hosts, cmd, user='ubuntu'):
     n = 0
+    num_s = n_servers
+    if is_replicated:
+        num_s *= 2
     if hosts == "all-clients":
         n = n_clients
     elif hosts == "all-servers":
-        n = n_servers
+        n = num_s
     elif hosts == "all-hosts":
-        n = n_servers+n_clients
+        n = num_s+n_clients
     run_cmd(hosts, "cd /home/ubuntu/kaiju/; %s" % cmd, user, n)
 
 def pprint(str):
@@ -205,6 +224,11 @@ def pprint(str):
         print (str)
 def start_ycsb_clients(**kwargs):
     def fmt_ycsb_string(runType):
+        hosts = ""
+        if kwargs.get("replication",0) == 1:
+            hosts = KAIJU_HOSTS_EXTERNAL_REPLICA
+        else:
+            hosts = KAIJU_HOSTS_EXTERNAL
         return (('cd /home/ubuntu/kaiju/contrib/YCSB;' +
                  netCmd+
                  'rm *.log;' \
@@ -212,7 +236,7 @@ def start_ycsb_clients(**kwargs):
                      ' 1>%s_out.log 2>%s_err.log' 
                      )% (                              
                             runType,
-                            KAIJU_HOSTS_EXTERNAL,
+                            hosts,
                                                       kwargs.get("threads", 10) if runType != 'load' else min(1000, kwargs.get("recordcount")/10),
                                                       kwargs.get("txnlen", 8),
                                                       kwargs.get("readprop", .5),
@@ -342,25 +366,36 @@ if __name__ == "__main__":
         system("mkdir -p "+args.output_dir)
         system("cp experiments.py "+args.output_dir)
         fresh = experiment["freshness"]
+        replication = experiment["replication"]
+        if replication == 1:
+            is_replicated = True
         for nc, ns in experiment["serversList"]:
             n_clients = nc
             n_servers = ns
             args.servers = ns
             args.clients = nc
+            num_s = ns
+            if replication == 1:
+                num_s *= 2
             KAIJU_HOSTS_INTERNAL = None
             i = 0
             for server in server_list:
-                if i == ns:
+                if i == num_s:
                     break
                 for loc_id in range (0,SERVERS_PER_HOST):
                     if KAIJU_HOSTS_INTERNAL:
                         KAIJU_HOSTS_INTERNAL += ","
                         KAIJU_HOSTS_EXTERNAL += ","
+                        if i < num_s//2:
+                            KAIJU_HOSTS_EXTERNAL_REPLICA += ","
                     else:
                         KAIJU_HOSTS_EXTERNAL = ""
                         KAIJU_HOSTS_INTERNAL = ""
+                        KAIJU_HOSTS_EXTERNAL_REPLICA = ""
                     KAIJU_HOSTS_INTERNAL += server + ":" + str(KAIJU_PORT+loc_id)
                     KAIJU_HOSTS_EXTERNAL += server + ":" + str(THRIFT_PORT+loc_id)
+                    if i < num_s//2:
+                        KAIJU_HOSTS_EXTERNAL_REPLICA += server + ":" + str(THRIFT_PORT+loc_id)
                 i += 1
             for iteration in experiment["iterations"]:
                 firstrun = True
@@ -438,6 +473,7 @@ if __name__ == "__main__":
                                                                 check_commit_delay=check_commit_delay,
                                                                 bgrun=experiment["launch_in_bg"],
                                                                 opw = opw,
-                                                                overwrite_gc_prep_ms = get_prep_gc(ra_algorithm,opw,readprop),
+                                                                replication=replication,
+                                                                overwrite_gc_prep_ms = get_prep_gc(ra_algorithm,opw,readprop, ns),
                                                                 freshness=fresh)
                                                     firstrun = False

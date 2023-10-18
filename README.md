@@ -1,6 +1,8 @@
 # RA-NOC2 Prototype
 
-This repository contains the prototype for the RA-NOC2 project. It is based on the repository from the SIGMOD 2014 paper titled [Scalable Atomic Visibility with RAMP Transactions](http://www.bailis.org/papers/ramp-sigmod2014.pdf) and includes enhancements to run experiments on RA-NOC2, RA-NOC, LORA and the OPW version of RAMP-F and RAMP-S.
+This repository contains the prototype for the RA-NOC2 project. It is based on the repository from the SIGMOD 2014 paper titled [Scalable Atomic Visibility with RAMP Transactions](http://www.bailis.org/papers/ramp-sigmod2014.pdf) and includes enhancements to run experiments on ORA, LORA and the OPW version of RAMP-F and RAMP-S. 
+
+Most of the logic for the algorithms is located in the respective ServiceHandler files. For RA-NOC2 the logic is found in ReadAtomicOraBasedServiceHandler.java. Some more logic is found in the MemoryStorageEngine.java class which handles a lot of the server-side logic.
 
 ## Setting up the CloudLab Cluster
 
@@ -14,6 +16,8 @@ sudo apt update
 sudo apt install -y default-jdk
 sudo apt install -y pssh
 sudo apt install -y maven
+sudo apt install -y python3-pip
+pip3 install pexpect
 ```
 
 
@@ -28,6 +32,7 @@ sudo apt install -y maven
 
 7. Now, change to the `/home/ubuntu/kaiju/experiment` folder and run `bash setup_cluster.sh`. (It will ask for a password to setup passwordless ssh among all the nodes, it's the same password that is used for the Openstack dahsboard)
 
+Remark: for replication experiments use double the number of server machines.
 ## Running an Experiment
 
 In `experiments.py`, you will find different experiments that you can run from the RAMP paper. You can expand and modify these experiments by altering the lists of parameters in the dictionary. For example, `default` is a test with default parameters. To run any experiment, change to the `/home/ubuntu/kaiju/experiment` folder and run:
